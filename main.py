@@ -66,7 +66,7 @@ async def start_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Topic error: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Topic creation failed")
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def copy_message_without_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not session.validate_user(update.message.from_user.id):
             return
@@ -75,46 +75,72 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ First create topic with /start <TOPIC>")
             return
 
-        # Get the raw text with all entities (formatting)
-        text_content = update.message.text
-        entities = update.message.entities or update.message.caption_entities
+        # For text messages
+        if update.message.text:
+            await context.bot.send_message(
+                chat_id=MAIN_GROUP_ID,
+                text=update.message.text,
+                message_thread_id=session.current_thread_id,
+                entities=update.message.entities,
+                parse_mode=None  # Preserve original formatting
+            )
         
-        logger.info(f"Processing text with {len(entities or [])} formatting entities")
+        # For media with captions
+        elif update.message.caption:
+            if update.message.photo:
+                await context.bot.send_photo(
+                    chat_id=MAIN_GROUP_ID,
+                    photo=update.message.photo[-1].file_id,
+                    caption=update.message.caption,
+                    caption_entities=update.message.caption_entities,
+                    message_thread_id=session.current_thread_id,
+                    parse_mode=None
+                )
+            elif update.message.video:
+                await context.bot.send_video(
+                    chat_id=MAIN_GROUP_ID,
+                    video=update.message.video.file_id,
+                    caption=update.message.caption,
+                    caption_entities=update.message.caption_entities,
+                    message_thread_id=session.current_thread_id,
+                    parse_mode=None
+                )
+            elif update.message.document:
+                await context.bot.send_document(
+                    chat_id=MAIN_GROUP_ID,
+                    document=update.message.document.file_id,
+                    caption=update.message.caption,
+                    caption_entities=update.message.caption_entities,
+                    message_thread_id=session.current_thread_id,
+                    parse_mode=None
+                )
+        
+        # For media without captions
+        else:
+            if update.message.photo:
+                await context.bot.send_photo(
+                    chat_id=MAIN_GROUP_ID,
+                    photo=update.message.photo[-1].file_id,
+                    message_thread_id=session.current_thread_id
+                )
+            elif update.message.video:
+                await context.bot.send_video(
+                    chat_id=MAIN_GROUP_ID,
+                    video=update.message.video.file_id,
+                    message_thread_id=session.current_thread_id
+                )
+            elif update.message.document:
+                await context.bot.send_document(
+                    chat_id=MAIN_GROUP_ID,
+                    document=update.message.document.file_id,
+                    message_thread_id=session.current_thread_id
+                )
 
-        # Forward the message with original formatting
-        await context.bot.forward_message(
-            chat_id=MAIN_GROUP_ID,
-            from_chat_id=update.message.chat_id,
-            message_id=update.message.message_id,
-            message_thread_id=session.current_thread_id
-        )
-        await update.message.reply_text("✅ Text forwarded with original formatting")
+        await update.message.reply_text("✅ Content posted without forward tag")
 
     except Exception as e:
-        logger.error(f"Text error: {str(e)}", exc_info=True)
-        await update.message.reply_text(f"⚠️ Failed to forward text: {str(e)}")
-
-async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if not session.validate_user(update.message.from_user.id):
-            return
-
-        if not session.current_thread_id:
-            await update.message.reply_text("⚠️ First create topic with /start <TOPIC>")
-            return
-
-        # Forward media with original caption and formatting
-        await context.bot.forward_message(
-            chat_id=MAIN_GROUP_ID,
-            from_chat_id=update.message.chat_id,
-            message_id=update.message.message_id,
-            message_thread_id=session.current_thread_id
-        )
-        await update.message.reply_text("✅ Media forwarded with original formatting")
-
-    except Exception as e:
-        logger.error(f"Media error: {str(e)}", exc_info=True)
-        await update.message.reply_text(f"⚠️ Failed to forward media: {str(e)}")
+        logger.error(f"Error: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"⚠️ Failed to post: {str(e)}")
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -122,7 +148,7 @@ def main():
     # Command handlers
     app.add_handler(CommandHandler("start", start_session))
     
-    # Content handlers - now using forwarding instead of re-sending
+    # Content handlers
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & (
             filters.TEXT |
@@ -130,10 +156,10 @@ def main():
             filters.Document.ALL |
             filters.PHOTO
         ) & ~filters.COMMAND,
-        handle_media if filters.VIDEO | filters.Document.ALL | filters.PHOTO else handle_text
+        copy_message_without_forward
     ))
     
-    logger.info("Bot started with message forwarding")
+    logger.info("Bot started with no-forwarding mode")
     app.run_polling()
 
 if __name__ == "__main__":
