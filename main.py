@@ -46,7 +46,7 @@ class SessionManager:
             # For now using placeholder groups
             self.available_groups = {
                 "CA Inter Group": -1002501498159,
-                "CA Final Group": -1002501498159
+                "CA Final Group": -1002665578655
             }
         except Exception as e:
             logger.error(f"Error refreshing groups: {e}")
