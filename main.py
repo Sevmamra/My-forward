@@ -22,7 +22,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class SessionManager:
-    """Manages active upload session"""
     def __init__(self):
         self.current_topic = None
         self.current_thread_id = None
@@ -41,7 +40,6 @@ class SessionManager:
 session = SessionManager()
 
 async def start_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Initialize new upload session"""
     if not session.validate_user(update.message.from_user.id):
         await update.message.reply_text("❌ Unauthorized")
         return
@@ -69,22 +67,39 @@ async def start_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Topic creation failed")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages"""
     try:
-        logger.info(f"Processing text: {update.message.text[:50]}...")
+        if not session.validate_user(update.message.from_user.id):
+            return
+
+        if not session.current_thread_id:
+            await update.message.reply_text("⚠️ First create topic with /start <TOPIC>")
+            return
+
+        text_content = update.message.text
+        logger.info(f"Processing text message (length: {len(text_content)})")
+
+        # Send with parse_mode to preserve formatting
         await context.bot.send_message(
             chat_id=MAIN_GROUP_ID,
             message_thread_id=session.current_thread_id,
-            text=update.message.text
+            text=text_content,
+            parse_mode='HTML'  # Preserves special characters and formatting
         )
         await update.message.reply_text("✅ Text added to topic")
+
     except Exception as e:
-        logger.error(f"Text error: {e}", exc_info=True)
-        await update.message.reply_text("⚠️ Failed to send text")
+        logger.error(f"Text error: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"⚠️ Failed to send text: {str(e)}")
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle media messages"""
     try:
+        if not session.validate_user(update.message.from_user.id):
+            return
+
+        if not session.current_thread_id:
+            await update.message.reply_text("⚠️ First create topic with /start <TOPIC>")
+            return
+
         content = None
         if update.message.video:
             content = ("video", update.message.video.file_id)
@@ -104,13 +119,14 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=MAIN_GROUP_ID,
             message_thread_id=session.current_thread_id,
             **{content_type: file_id},
-            caption=update.message.caption or ""
+            caption=update.message.caption or "",
+            parse_mode='HTML'
         )
         await update.message.reply_text(f"✅ {content_type.capitalize()} added")
 
     except Exception as e:
-        logger.error(f"Media error: {e}", exc_info=True)
-        await update.message.reply_text(f"⚠️ Failed to send {content_type}")
+        logger.error(f"Media error: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"⚠️ Failed to send {content_type}: {str(e)}")
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
