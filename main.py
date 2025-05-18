@@ -75,21 +75,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ First create topic with /start <TOPIC>")
             return
 
+        # Get the raw text with all entities (formatting)
         text_content = update.message.text
-        logger.info(f"Processing text message (length: {len(text_content)})")
+        entities = update.message.entities or update.message.caption_entities
+        
+        logger.info(f"Processing text with {len(entities or [])} formatting entities")
 
-        # Send with parse_mode to preserve formatting
-        await context.bot.send_message(
+        # Forward the message with original formatting
+        await context.bot.forward_message(
             chat_id=MAIN_GROUP_ID,
-            message_thread_id=session.current_thread_id,
-            text=text_content,
-            parse_mode='HTML'  # Preserves special characters and formatting
+            from_chat_id=update.message.chat_id,
+            message_id=update.message.message_id,
+            message_thread_id=session.current_thread_id
         )
-        await update.message.reply_text("✅ Text added to topic")
+        await update.message.reply_text("✅ Text forwarded with original formatting")
 
     except Exception as e:
         logger.error(f"Text error: {str(e)}", exc_info=True)
-        await update.message.reply_text(f"⚠️ Failed to send text: {str(e)}")
+        await update.message.reply_text(f"⚠️ Failed to forward text: {str(e)}")
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -100,33 +103,18 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ First create topic with /start <TOPIC>")
             return
 
-        content = None
-        if update.message.video:
-            content = ("video", update.message.video.file_id)
-        elif update.message.document:
-            content = ("document", update.message.document.file_id)
-        elif update.message.photo:
-            content = ("photo", update.message.photo[-1].file_id)
-
-        if not content:
-            return
-
-        content_type, file_id = content
-        logger.info(f"Processing {content_type}")
-
-        method = getattr(context.bot, f"send_{content_type}")
-        await method(
+        # Forward media with original caption and formatting
+        await context.bot.forward_message(
             chat_id=MAIN_GROUP_ID,
-            message_thread_id=session.current_thread_id,
-            **{content_type: file_id},
-            caption=update.message.caption or "",
-            parse_mode='HTML'
+            from_chat_id=update.message.chat_id,
+            message_id=update.message.message_id,
+            message_thread_id=session.current_thread_id
         )
-        await update.message.reply_text(f"✅ {content_type.capitalize()} added")
+        await update.message.reply_text("✅ Media forwarded with original formatting")
 
     except Exception as e:
         logger.error(f"Media error: {str(e)}", exc_info=True)
-        await update.message.reply_text(f"⚠️ Failed to send {content_type}: {str(e)}")
+        await update.message.reply_text(f"⚠️ Failed to forward media: {str(e)}")
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -134,21 +122,18 @@ def main():
     # Command handlers
     app.add_handler(CommandHandler("start", start_session))
     
-    # Content handlers
-    app.add_handler(MessageHandler(
-        filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
-        handle_text
-    ))
+    # Content handlers - now using forwarding instead of re-sending
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & (
+            filters.TEXT |
             filters.VIDEO |
             filters.Document.ALL |
             filters.PHOTO
-        ),
-        handle_media
+        ) & ~filters.COMMAND,
+        handle_media if filters.VIDEO | filters.Document.ALL | filters.PHOTO else handle_text
     ))
     
-    logger.info("Bot started")
+    logger.info("Bot started with message forwarding")
     app.run_polling()
 
 if __name__ == "__main__":
