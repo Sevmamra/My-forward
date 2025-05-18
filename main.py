@@ -1,13 +1,12 @@
 import os
 import logging
-from typing import Dict, Optional
-from telegram import Update, Bot, Video, Document
+from typing import Dict
+from telegram import Update, Video, Document
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     filters,
-    CallbackContext,
     ContextTypes
 )
 
@@ -22,49 +21,46 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MAIN_GROUP_ID = int(os.getenv("MAIN_GROUP_ID", "-10012345678"))
 AUTHORIZED_USER_ID = int(os.getenv("AUTHORIZED_USER_ID"))
-ADMIN_USER_IDS = [AUTHORIZED_USER_ID]  # Add more IDs if needed
 
-# Database setup (in-memory for simplicity, replace with Redis/Postgres in production)
-topics_db: Dict[str, int] = {}  # {topic_name: thread_id}
+# Database setup
+topics_db: Dict[str, int] = {}
 
-class UnauthorizedAccessError(Exception):
-    """Custom exception for unauthorized users"""
-    pass
-
-async def validate_access(update: Update) -> None:
+async def validate_access(update: Update) -> bool:
     """Check if user is authorized"""
-    if update.effective_user.id not in ADMIN_USER_IDS:
-        raise UnauthorizedAccessError(
-            f"Unauthorized access attempt by {update.effective_user.id}"
-        )
+    if update.effective_user.id != AUTHORIZED_USER_ID:
+        await update.message.reply_text("⛔ Access denied")
+        return False
+    return True
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handler for /start command"""
-    try:
-        await validate_access(update)
-        await update.message.reply_text(
-            "🚀 Bot activated!\n"
-            "Send files with caption: /upload TOPIC_NAME"
-        )
-    except UnauthorizedAccessError as e:
-        logger.warning(e)
-        await update.message.reply_text("⛔ Access denied")
+    if not await validate_access(update):
+        return
+    await update.message.reply_text(
+        "🚀 Bot activated!\n"
+        "Send files with caption: /upload TOPIC_NAME"
+    )
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Process uploaded media files"""
     try:
-        await validate_access(update)
-        
+        if not await validate_access(update):
+            return
+
         if not update.message.caption or not update.message.caption.startswith("/upload"):
             return
 
         # Parse command
         _, *topic_parts = update.message.caption.split()
         topic_name = " ".join(topic_parts).upper()
-        file = update.message.video or update.message.document
         
-        if not file:
-            await update.message.reply_text("❌ No valid file detected")
+        # Handle both video and document
+        if update.message.video:
+            file = update.message.video
+        elif update.message.document:
+            file = update.message.document
+        else:
+            await update.message.reply_text("❌ Unsupported file type")
             return
 
         # Get or create thread
@@ -79,14 +75,14 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             logger.info(f"Created new thread for {topic_name}")
 
         # Forward file to group
-        if isinstance(file, Video):
+        if update.message.video:
             await context.bot.send_video(
                 chat_id=MAIN_GROUP_ID,
                 video=file.file_id,
                 reply_to_message_id=thread_id,
                 caption=f"🎬 {topic_name}"
             )
-        elif isinstance(file, Document):
+        else:  # document
             await context.bot.send_document(
                 chat_id=MAIN_GROUP_ID,
                 document=file.file_id,
@@ -96,8 +92,6 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             
         await update.message.reply_text(f"✅ Uploaded to '{topic_name}'")
         
-    except UnauthorizedAccessError as e:
-        logger.warning(e)
     except Exception as e:
         logger.error(f"Error in handle_media: {e}", exc_info=True)
         await update.message.reply_text("⚠️ An error occurred")
@@ -108,18 +102,10 @@ def setup_handlers(application):
     application.add_handler(
         MessageHandler(
             filters.ChatType.PRIVATE & 
-            (filters.VIDEO | filters.DOCUMENT),
+            (filters.VIDEO | filters.ATTACHMENT),
             handle_media
         )
     )
-
-async def post_init(application):
-    """Run after bot initialization"""
-    await application.bot.set_my_commands([
-        ("start", "Initialize the bot"),
-        ("upload", "Upload files to topics")
-    ])
-    logger.info("Bot setup complete")
 
 def main():
     """Run the bot"""
@@ -128,7 +114,6 @@ def main():
     
     application = ApplicationBuilder() \
         .token(TOKEN) \
-        .post_init(post_init) \
         .build()
 
     setup_handlers(application)
