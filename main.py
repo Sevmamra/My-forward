@@ -1,71 +1,140 @@
 import os
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+import logging
+from typing import Dict, Optional
+from telegram import Update, Bot, Video, Document
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    CallbackContext,
+    ContextTypes
+)
 
-import os
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # Render के Env Vars से लेगा
-MAIN_GROUP_ID = int(os.getenv("MAIN_GROUP_ID"))  # Render पर सेट करें
-AUTHORIZED_USER_ID = int(os.getenv("AUTHORIZED_USER_ID"))  # Render पर सेट करें
-topics = {}
+# Environment variables
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+MAIN_GROUP_ID = int(os.getenv("MAIN_GROUP_ID", "-10012345678"))
+AUTHORIZED_USER_ID = int(os.getenv("AUTHORIZED_USER_ID"))
+ADMIN_USER_IDS = [AUTHORIZED_USER_ID]  # Add more IDs if needed
 
-def is_authorized_user(user_id: int) -> bool:
-    return user_id == AUTHORIZED_USER_ID
+# Database setup (in-memory for simplicity, replace with Redis/Postgres in production)
+topics_db: Dict[str, int] = {}  # {topic_name: thread_id}
 
-def is_authorized_group(chat_id: int) -> bool:
-    return chat_id == MAIN_GROUP_ID
+class UnauthorizedAccessError(Exception):
+    """Custom exception for unauthorized users"""
+    pass
 
-def start(update: Update, context: CallbackContext):
-    if not is_authorized_user(update.message.from_user.id):
-        update.message.reply_text("❌ आप इस बॉट का उपयोग नहीं कर सकते!")
-        return
-    update.message.reply_text("🎉 बॉट चालू है! /upload <TOPIC> लिखकर फाइलें भेजें।")
+async def validate_access(update: Update) -> None:
+    """Check if user is authorized"""
+    if update.effective_user.id not in ADMIN_USER_IDS:
+        raise UnauthorizedAccessError(
+            f"Unauthorized access attempt by {update.effective_user.id}"
+        )
 
-def handle_dm(update: Update, context: CallbackContext):
-    user_id = update.message.from_user.id
-    if not is_authorized_user(user_id):
-        update.message.reply_text("❌ आप इस बॉट का उपयोग नहीं कर सकते!")
-        return
-
-    if not update.message.caption or not update.message.caption.startswith("/upload"):
-        return
-
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler for /start command"""
     try:
-        topic_name = update.message.caption.split(" ")[1].upper()
-        file_id = update.message.video.file_id if update.message.video else update.message.document.file_id
+        await validate_access(update)
+        await update.message.reply_text(
+            "🚀 Bot activated!\n"
+            "Send files with caption: /upload TOPIC_NAME"
+        )
+    except UnauthorizedAccessError as e:
+        logger.warning(e)
+        await update.message.reply_text("⛔ Access denied")
 
-        if topic_name not in topics:
-            message = context.bot.send_message(
-                chat_id=MAIN_GROUP_ID,
-                text=f"📌 नया टॉपिक: {topic_name}",
-            )
-            topics[topic_name] = message.message_id
+async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Process uploaded media files"""
+    try:
+        await validate_access(update)
+        
+        if not update.message.caption or not update.message.caption.startswith("/upload"):
+            return
 
-        if update.message.video:
-            context.bot.send_video(
+        # Parse command
+        _, *topic_parts = update.message.caption.split()
+        topic_name = " ".join(topic_parts).upper()
+        file = update.message.video or update.message.document
+        
+        if not file:
+            await update.message.reply_text("❌ No valid file detected")
+            return
+
+        # Get or create thread
+        thread_id = topics_db.get(topic_name)
+        if not thread_id:
+            msg = await context.bot.send_message(
                 chat_id=MAIN_GROUP_ID,
-                video=file_id,
-                reply_to_message_id=topics[topic_name],
-                caption=f"📹 {topic_name} - लेक्चर"
+                text=f"📌 New Topic: {topic_name}"
             )
-        elif update.message.document:
-            context.bot.send_document(
+            thread_id = msg.message_id
+            topics_db[topic_name] = thread_id
+            logger.info(f"Created new thread for {topic_name}")
+
+        # Forward file to group
+        if isinstance(file, Video):
+            await context.bot.send_video(
                 chat_id=MAIN_GROUP_ID,
-                document=file_id,
-                reply_to_message_id=topics[topic_name],
-                caption=f"📄 {topic_name} - नोट्स"
+                video=file.file_id,
+                reply_to_message_id=thread_id,
+                caption=f"🎬 {topic_name}"
             )
-        update.message.reply_text(f"✅ '{topic_name}' में अपलोड हो गया!")
+        elif isinstance(file, Document):
+            await context.bot.send_document(
+                chat_id=MAIN_GROUP_ID,
+                document=file.file_id,
+                reply_to_message_id=thread_id,
+                caption=f"📄 {topic_name}"
+            )
+            
+        await update.message.reply_text(f"✅ Uploaded to '{topic_name}'")
+        
+    except UnauthorizedAccessError as e:
+        logger.warning(e)
     except Exception as e:
-        update.message.reply_text(f"❌ एरर: {e}")
+        logger.error(f"Error in handle_media: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ An error occurred")
+
+def setup_handlers(application):
+    """Configure bot handlers"""
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & 
+            (filters.VIDEO | filters.DOCUMENT),
+            handle_media
+        )
+    )
+
+async def post_init(application):
+    """Run after bot initialization"""
+    await application.bot.set_my_commands([
+        ("start", "Initialize the bot"),
+        ("upload", "Upload files to topics")
+    ])
+    logger.info("Bot setup complete")
 
 def main():
-    updater = Updater(TOKEN)
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.private & (~Filters.command), handle_dm))
-    updater.start_polling()
-    updater.idle()
+    """Run the bot"""
+    if not TOKEN:
+        raise ValueError("TELEGRAM_BOT_TOKEN not set in environment")
+    
+    application = ApplicationBuilder() \
+        .token(TOKEN) \
+        .post_init(post_init) \
+        .build()
+
+    setup_handlers(application)
+    
+    logger.info("Starting bot...")
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
