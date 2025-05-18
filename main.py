@@ -2,10 +2,11 @@ import os
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
-TOKEN = os.getenv("7758379525:AAF0ozBiEmvbPgj1ol7JgBKGCbOw-LG-hiA")
-MAIN_GROUP_ID = -1002501498159  # अपने मेन ग्रुप का ID (निगेटिव)
-AUTHORIZED_USER_ID = 6567162029  # अपना टेलीग्राम User ID (https://t.me/userinfobot से पता करें)
+import os
 
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # Render के Env Vars से लेगा
+MAIN_GROUP_ID = int(os.getenv("MAIN_GROUP_ID"))  # Render पर सेट करें
+AUTHORIZED_USER_ID = int(os.getenv("AUTHORIZED_USER_ID"))  # Render पर सेट करें
 topics = {}
 
 def is_authorized_user(user_id: int) -> bool:
