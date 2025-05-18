@@ -2,9 +2,9 @@ import os
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-MAIN_GROUP_ID = -100123456789  # अपने मेन ग्रुप का ID (निगेटिव)
-AUTHORIZED_USER_ID = 123456789  # अपना टेलीग्राम User ID (https://t.me/userinfobot से पता करें)
+TOKEN = os.getenv("7758379525:AAF0ozBiEmvbPgj1ol7JgBKGCbOw-LG-hiA")
+MAIN_GROUP_ID = -1002501498159  # अपने मेन ग्रुप का ID (निगेटिव)
+AUTHORIZED_USER_ID = 6567162029  # अपना टेलीग्राम User ID (https://t.me/userinfobot से पता करें)
 
 topics = {}
 
