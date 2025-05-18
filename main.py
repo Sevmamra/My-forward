@@ -1,244 +1,198 @@
 import os
 import logging
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    BotCommand
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
-    ContextTypes,
-    ConversationHandler
+    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, filters
 )
 
-# Configuration
+# Config
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AUTHORIZED_USER_ID = int(os.getenv("AUTHORIZED_USER_ID"))
 
-# Logging setup
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# Group list (add your group IDs and names here)
+GROUPS = {
+    "-1002501498159": "CA Inter X Official",
+    "-1002665578655": "CA Inter X Backup"
+}
+
+# Logging
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Conversation states
-SELECTING_GROUP, SELECTING_TOPIC, UPLOADING_CONTENT = range(3)
-
+# Session manager
 class SessionManager:
     def __init__(self):
-        self.current_group = None
-        self.current_topic = None
-        self.current_thread_id = None
-        self.queued_content = []
-        self.available_groups = {}
+        self.reset()
 
-    async def refresh_groups(self, bot):
-        """Refresh list of groups where bot is admin"""
-        self.available_groups = {}
-        try:
-            # Get all chats where bot is member
-            chats = await bot.get_updates()
-            
-            # Filter for supergroups where bot is admin
-            for update in chats:
-                if update.my_chat_member and update.my_chat_member.chat.type in ['group', 'supergroup']:
-                    chat = update.my_chat_member.chat
-                    status = update.my_chat_member.new_chat_member.status
-                    
-                    if status in ['administrator', 'creator']:
-                        self.available_groups[chat.title] = chat.id
-                        
-        except Exception as e:
-            logger.error(f"Error refreshing groups: {e}")
+    def reset(self):
+        self.active = False
+        self.group_id = None
+        self.topic_id = None
+        self.uploads = {"texts": 0, "photos": 0, "videos": 0, "documents": 0}
+        self.pending_messages = []
 
-    def new_session(self, group_id, topic_name, thread_id):
-        self.current_group = group_id
-        self.current_topic = topic_name
-        self.current_thread_id = thread_id
-        self.queued_content = []
-        logger.info(f"New session: {topic_name} in {group_id}")
-
-    def validate_user(self, user_id):
-        if user_id != AUTHORIZED_USER_ID:
-            logger.warning(f"Unauthorized access: {user_id}")
-            return False
-        return True
+    def is_authorized(self, user_id):
+        return user_id == AUTHORIZED_USER_ID
 
 session = SessionManager()
 
+# /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send welcome message"""
-    if not session.validate_user(update.message.from_user.id):
+    if not session.is_authorized(update.effective_user.id):
+        await update.message.reply_text("❌ *Unauthorized access!*", parse_mode="Markdown")
         return
 
-    welcome_msg = """
-🌟 *Welcome to Premium Content Manager Bot* 🌟
+    text = (
+        "👋 *Welcome to CA Inter X Premium Bot!*\n\n"
+        "🚀 This bot helps you manage media uploads, forward-free posting, and organized topics in your groups.\n\n"
+        "Use /help to see available commands."
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
-📌 *Features:*
-- Automatic group detection
-- Batch upload support
-- Smart topic management
-- Detailed upload reports
-
-Tap /help to see all commands
-"""
-    await update.message.reply_text(welcome_msg, parse_mode='Markdown')
-    return ConversationHandler.END
-
+# /help command
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show help with all commands"""
-    if not session.validate_user(update.message.from_user.id):
+    if not session.is_authorized(update.effective_user.id):
         return
 
-    help_text = """
-🛠 *Available Commands:*
+    text = (
+        "📖 *Available Commands:*\n\n"
+        "📚 /groups — Choose a group to post in\n"
+        "❌ /cancel — Cancel current session\n"
+        "✅ /done — Post all uploaded content\n"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
-/groups - List all available groups
-/start - Welcome message
-/help - This message
-/done - Finish and upload queued content
-/cancel - Cancel current operation
-/refresh - Reload group list
+# /groups command
+async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not session.is_authorized(update.effective_user.id):
+        return
 
-📌 *How to Upload:*
-1. Select a group with /groups
-2. Choose a topic
-3. Send all your files
-4. Type /done when finished
-"""
     keyboard = [
-        [InlineKeyboardButton("📂 View Groups", callback_data='list_groups')],
-        [InlineKeyboardButton("🔄 Refresh Groups", callback_data='refresh_groups')]
+        [InlineKeyboardButton(name, callback_data=f"group_{gid}")] for gid, name in GROUPS.items()
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        help_text,
-        parse_mode='Markdown',
-        reply_markup=reply_markup
-    )
+    await update.message.reply_text("📌 *Select a group:*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-async def refresh_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Refresh group list"""
-    if not session.validate_user(update.callback_query.from_user.id):
-        return
-
-    await session.refresh_groups(context.bot)
-    await update.callback_query.answer("Group list refreshed!")
-    await list_groups(update, context)
-
-async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List available groups where bot is admin"""
-    if not session.validate_user(update.callback_query.from_user.id if update.callback_query else update.message.from_user.id):
-        return
-
-    if not session.available_groups:
-        await session.refresh_groups(context.bot)
-
-    if not session.available_groups:
-        await (update.callback_query.edit_message_text if update.callback_query else update.message.reply_text)(
-            "❌ No groups found where bot is admin",
-            parse_mode='Markdown'
-        )
-        return ConversationHandler.END
-
-    keyboard = []
-    for group_name in session.available_groups:
-        keyboard.append(
-            [InlineKeyboardButton(group_name, callback_data=f"group_{group_name}")]
-        )
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await (update.callback_query.edit_message_text if update.callback_query else update.message.reply_text)(
-        "📚 *Available Groups:*\nSelect one to continue:",
-        parse_mode='Markdown',
-        reply_markup=reply_markup
-    )
-    return SELECTING_GROUP
-
-async def select_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle group selection"""
+# Handle button clicks
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    group_name = query.data.split('_')[1]
-    
-    context.user_data['selected_group'] = {
-        'name': group_name,
-        'id': session.available_groups[group_name]
-    }
-    
-    # Get topics for this group (in real implementation, fetch from Telegram)
-    topics = ["General", "Lectures", "Notes"]  # Placeholder - implement actual topic fetching
-    
-    keyboard = []
-    for topic in topics:
-        keyboard.append(
-            [InlineKeyboardButton(topic, callback_data=f"topic_{topic}")]
-        )
-    keyboard.append(
-        [InlineKeyboardButton("➕ New Topic", callback_data="new_topic")]
-    )
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        f"📂 *{group_name}*\nSelect a topic:",
-        parse_mode='Markdown',
-        reply_markup=reply_markup
-    )
-    return SELECTING_TOPIC
+    await query.answer()
 
-# ... (rest of the code remains the same as previous implementation)
+    if not session.is_authorized(query.from_user.id):
+        return
 
+    data = query.data
+
+    if data.startswith("group_"):
+        session.group_id = data.split("_")[1]
+        await query.message.reply_text(f"📌 *Selected Group:* {GROUPS[session.group_id]}\n\n"
+                                       "Now enter your topic name to start a new session.", parse_mode="Markdown")
+        session.active = False  # reset session before starting new
+
+    elif data.startswith("topic_"):
+        topic_id = int(data.split("_")[1])
+        session.topic_id = topic_id
+        session.active = True
+        await query.message.reply_text(f"📝 *Selected Topic ID:* `{topic_id}`\n\nNow send your media/messages.", parse_mode="Markdown")
+
+# Handle topic creation via /topic <name>
+async def topic_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not session.is_authorized(update.effective_user.id):
+        return
+
+    if not session.group_id:
+        await update.message.reply_text("⚠️ First select a group using /groups")
+        return
+
+    topic_name = ' '.join(context.args)
+    if not topic_name:
+        await update.message.reply_text("Usage: /topic <topic name>")
+        return
+
+    result = await context.bot.create_forum_topic(chat_id=session.group_id, name=topic_name)
+    session.topic_id = result.message_thread_id
+    session.active = True
+
+    await update.message.reply_text(f"✅ *Topic created:* {topic_name}\nTopic ID: `{result.message_thread_id}`\n\nNow send your media/messages.", parse_mode="Markdown")
+
+# Upload handler
+async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not session.is_authorized(update.effective_user.id) or not session.active:
+        return
+
+    message = update.message
+    session.pending_messages.append(message)
+
+    if message.text:
+        session.uploads["texts"] += 1
+    elif message.photo:
+        session.uploads["photos"] += 1
+    elif message.video:
+        session.uploads["videos"] += 1
+    elif message.document:
+        session.uploads["documents"] += 1
+
+# /done command
+async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not session.is_authorized(update.effective_user.id):
+        return
+
+    if not session.active:
+        await update.message.reply_text("⚠️ No active session.")
+        return
+
+    count = session.uploads
+
+    for msg in session.pending_messages:
+        if msg.text:
+            await context.bot.send_message(chat_id=session.group_id, text=msg.text, message_thread_id=session.topic_id)
+        elif msg.photo:
+            await context.bot.send_photo(chat_id=session.group_id, photo=msg.photo[-1].file_id, message_thread_id=session.topic_id)
+        elif msg.video:
+            await context.bot.send_video(chat_id=session.group_id, video=msg.video.file_id, message_thread_id=session.topic_id)
+        elif msg.document:
+            await context.bot.send_document(chat_id=session.group_id, document=msg.document.file_id, message_thread_id=session.topic_id)
+
+    report = (
+        "📊 *Upload Report:*\n"
+        f"📝 Texts: {count['texts']}\n"
+        f"📷 Photos: {count['photos']}\n"
+        f"🎥 Videos: {count['videos']}\n"
+        f"📄 Documents: {count['documents']}\n"
+        "➖➖➖➖➖\n"
+        f"✅ Total: {sum(count.values())} items"
+    )
+    await update.message.reply_text(report, parse_mode="Markdown")
+
+    session.reset()
+
+# /cancel command
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not session.is_authorized(update.effective_user.id):
+        return
+
+    session.reset()
+    await update.message.reply_text("❌ *Session cancelled.*", parse_mode="Markdown")
+
+# App setup
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
-    
-    # Set bot commands
-    commands = [
-        BotCommand("start", "Welcome message"),
-        BotCommand("help", "Show help"),
-        BotCommand("groups", "List available groups"),
-        BotCommand("refresh", "Refresh group list"),
-        BotCommand("done", "Finish uploading"),
-        BotCommand("cancel", "Cancel operation")
-    ]
-    app.bot.set_my_commands(commands)
-    
-    # Conversation handler
-    conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("groups", list_groups),
-            CommandHandler("refresh", list_groups),
-            CallbackQueryHandler(list_groups, pattern="^list_groups$"),
-            CallbackQueryHandler(refresh_groups, pattern="^refresh_groups$")
-        ],
-        states={
-            SELECTING_GROUP: [
-                CallbackQueryHandler(select_group, pattern="^group_")
-            ],
-            SELECTING_TOPIC: [
-                CallbackQueryHandler(select_topic, pattern="^(topic_|new_topic)")
-            ],
-            UPLOADING_CONTENT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, queue_content),
-                MessageHandler(filters.PHOTO, queue_content),
-                MessageHandler(filters.VIDEO, queue_content),
-                MessageHandler(filters.Document.ALL, queue_content),
-                CommandHandler("done", done_uploading)
-            ]
-        },
-        fallbacks=[CommandHandler("cancel", cancel)]
-    )
-    
-    app.add_handler(conv_handler)
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    
-    logger.info("Premium bot with dynamic group detection started")
+    app.add_handler(CommandHandler("groups", groups_command))
+    app.add_handler(CommandHandler("topic", topic_command))
+    app.add_handler(CommandHandler("done", done_command))
+    app.add_handler(CommandHandler("cancel", cancel_command))
+
+    app.add_handler(CallbackQueryHandler(button_handler))
+
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL) & ~filters.COMMAND,
+        upload_handler
+    ))
+
+    logger.info("CA Inter X Premium Bot Started.")
     app.run_polling()
 
 if __name__ == "__main__":
