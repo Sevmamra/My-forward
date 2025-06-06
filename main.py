@@ -135,7 +135,7 @@ async def copy_message_without_forward(update: Update, context: ContextTypes.DEF
                     message_thread_id=session.current_thread_id
                 )
 
-        await update.message.reply_text("✅ Content posted without forward tag")
+        await update.message.reply_text("✅ Content posted in group")
 
     except Exception as e:
         logger.error(f"Error: {str(e)}", exc_info=True)
